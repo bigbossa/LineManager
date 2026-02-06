@@ -1,0 +1,5 @@
+{
+  "name": "LINE OA Smart Broadcaster",
+  "description": "A CRM dashboard to manage LINE Business contacts and send AI-personalized messages to individuals at scale.",
+  "requestFramePermissions": []
+}
