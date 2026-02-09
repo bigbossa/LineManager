@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Contact, PersonalizedMessage, View } from './types';
-import { MOCK_CONTACTS, INITIAL_CAMPAIGN_MESSAGE } from './constants';
+import { INITIAL_CAMPAIGN_MESSAGE } from './constants';
 import { generatePersonalizedBulk } from './services/geminiService';
 import { PhonePreview } from './components/PhonePreview';
 import { ApiKeyModal } from './components/ApiKeyModal';
@@ -8,11 +8,29 @@ import { LineConfigModal } from './components/LineConfigModal';
 import { isLineConfigured, getLineConfig, sendPersonalizedMessages, pushMessage, getBotInfo, getAllFollowers, broadcastMessage, LineConfig } from './services/lineService';
 
 // Icons
-import { Users, Send, LayoutDashboard, Settings, MessageSquare, Wand2, CheckCircle2, Loader2, ArrowRight, Filter, X, RefreshCw, Radio } from 'lucide-react';
+import { Users, Send, LayoutDashboard, Settings, MessageSquare, Wand2, CheckCircle2, Loader2, ArrowRight, Filter, X, RefreshCw, Radio, UserPlus, Trash2 } from 'lucide-react';
+
+// Load saved contacts from localStorage (filter out old mock data)
+const loadSavedContacts = (): Contact[] => {
+  const saved = localStorage.getItem('line_contacts');
+  if (saved) {
+    try {
+      const contacts = JSON.parse(saved) as Contact[];
+      // Filter out mock contacts (they have demo User IDs like U1234567890abcdef...)
+      const realContacts = contacts.filter(c => 
+        !c.lineUserId?.match(/^U[0-9]{10}abcdef[0-9]{10}abcdef$/)
+      );
+      return realContacts;
+    } catch {
+      return [];
+    }
+  }
+  return [];
+};
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<View>(View.CAMPAIGN_NEW);
-  const [contacts, setContacts] = useState<Contact[]>(MOCK_CONTACTS);
+  const [contacts, setContacts] = useState<Contact[]>(loadSavedContacts());
   const [isLoadingContacts, setIsLoadingContacts] = useState(false);
   
   // Filter State
@@ -27,18 +45,33 @@ const App: React.FC = () => {
     return Array.from(interests);
   }, [contacts]);
 
-  // Initialize selected interests with all available once
+  // Save contacts to localStorage whenever they change
   useEffect(() => {
-    if (selectedInterests.length === 0 && allInterests.length > 0) {
-      setSelectedInterests(allInterests);
-    }
-  }, [allInterests.length]);
+    localStorage.setItem('line_contacts', JSON.stringify(contacts));
+  }, [contacts]);
 
-  // Filter Logic
+  // Auto-select new interests when contacts change
+  useEffect(() => {
+    if (allInterests.length > 0) {
+      // Add any new interests to selected interests
+      setSelectedInterests(prev => {
+        const newInterests = allInterests.filter(i => !prev.includes(i));
+        if (newInterests.length > 0) {
+          return [...prev, ...newInterests];
+        }
+        return prev.length === 0 ? allInterests : prev;
+      });
+    }
+  }, [allInterests]);
+
+  // Filter Logic - if no filters, show all contacts
   const filteredContacts = useMemo(() => {
+    if (contacts.length === 0) return [];
+    if (selectedInterests.length === 0) return contacts.filter(c => selectedTiers.includes(c.tier));
+    
     return contacts.filter(contact => {
       const tierMatch = selectedTiers.includes(contact.tier);
-      const interestMatch = contact.interests.some(i => selectedInterests.includes(i));
+      const interestMatch = contact.interests.length === 0 || contact.interests.some(i => selectedInterests.includes(i));
       return tierMatch && interestMatch;
     });
   }, [contacts, selectedTiers, selectedInterests]);
@@ -51,6 +84,15 @@ const App: React.FC = () => {
   const [sendSuccess, setSendSuccess] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [isBroadcasting, setIsBroadcasting] = useState(false);
+
+  // Add Contact Modal State
+  const [isAddContactModalOpen, setIsAddContactModalOpen] = useState(false);
+  const [newContact, setNewContact] = useState({
+    name: '',
+    lineUserId: '',
+    tier: 'Bronze' as 'Gold' | 'Silver' | 'Bronze',
+    interests: '',
+  });
 
   // LINE Config State
   const [isLineConfigModalOpen, setIsLineConfigModalOpen] = useState(false);
@@ -261,6 +303,36 @@ const App: React.FC = () => {
     }
   };
 
+  // Add new contact
+  const handleAddContact = () => {
+    if (!newContact.name.trim() || !newContact.lineUserId.trim()) {
+      alert('Please enter name and LINE User ID');
+      return;
+    }
+
+    const contact: Contact = {
+      id: `custom_${Date.now()}`,
+      name: newContact.name.trim(),
+      lineId: newContact.lineUserId.slice(0, 10) + '...',
+      lineUserId: newContact.lineUserId.trim(),
+      tier: newContact.tier,
+      interests: newContact.interests.split(',').map(i => i.trim()).filter(i => i),
+      lastInteraction: 'Just added',
+      avatarUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(newContact.name)}&background=06C755&color=fff`,
+    };
+
+    setContacts(prev => [...prev, contact]);
+    setNewContact({ name: '', lineUserId: '', tier: 'Bronze', interests: '' });
+    setIsAddContactModalOpen(false);
+  };
+
+  // Delete contact
+  const handleDeleteContact = (contactId: string) => {
+    if (window.confirm('Are you sure you want to delete this contact?')) {
+      setContacts(prev => prev.filter(c => c.id !== contactId));
+    }
+  };
+
   const toggleInterest = (interest: string) => {
     if (selectedInterests.includes(interest)) {
       setSelectedInterests(prev => prev.filter(i => i !== interest));
@@ -428,8 +500,12 @@ const App: React.FC = () => {
             )}
             Refresh from LINE
           </button>
-          <button className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700">
-            + Add Contact
+          <button 
+            onClick={() => setIsAddContactModalOpen(true)}
+            className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700"
+          >
+            <UserPlus className="w-4 h-4" />
+            Add Contact
           </button>
         </div>
       </div>
@@ -449,18 +525,19 @@ const App: React.FC = () => {
                 <th className="p-4 text-xs font-semibold text-gray-500 uppercase">Tier</th>
                 <th className="p-4 text-xs font-semibold text-gray-500 uppercase">Info</th>
                 <th className="p-4 text-xs font-semibold text-gray-500 uppercase">Status</th>
+                <th className="p-4 text-xs font-semibold text-gray-500 uppercase">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {contacts.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="p-8 text-center text-gray-500">
+                  <td colSpan={6} className="p-8 text-center text-gray-500">
                     No contacts found. {!lineConfigured && 'Configure LINE API to fetch real followers.'}
                   </td>
                 </tr>
               ) : (
                 contacts.map(c => (
-                  <tr key={c.id} className="hover:bg-gray-50 transition-colors">
+                  <tr key={c.id} className="hover:bg-gray-50 transition-colors group">
                     <td className="p-4 flex items-center">
                       <img src={c.avatarUrl} alt={c.name} className="w-8 h-8 rounded-full mr-3 object-cover" />
                       <span className="font-medium text-gray-900">{c.name}</span>
@@ -477,6 +554,15 @@ const App: React.FC = () => {
                     </td>
                     <td className="p-4 text-gray-500 text-sm">{c.interests.slice(0, 2).join(', ')}{c.interests.length > 2 ? '...' : ''}</td>
                     <td className="p-4 text-green-600 text-xs font-medium">Active</td>
+                    <td className="p-4">
+                      <button
+                        onClick={() => handleDeleteContact(c.id)}
+                        className="text-gray-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-all p-1 rounded hover:bg-red-50"
+                        title="Delete contact"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </td>
                   </tr>
                 ))
               )}
@@ -784,6 +870,107 @@ const App: React.FC = () => {
           setLineConfigured(true);
         }}
       />
+
+      {/* Add Contact Modal */}
+      {isAddContactModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full transform transition-all scale-100">
+            <div className="flex justify-between items-center p-6 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <div className="bg-green-100 p-2 rounded-lg">
+                  <UserPlus className="w-5 h-5 text-green-600" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-gray-800">Add Contact</h3>
+                  <p className="text-xs text-gray-500">Add a LINE user to send personalized messages</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsAddContactModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100 transition-colors"
+                title="Close"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={newContact.name}
+                  onChange={(e) => setNewContact(prev => ({ ...prev, name: e.target.value }))}
+                  placeholder="e.g., John Doe"
+                  className="w-full p-3 border border-gray-200 rounded-lg focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none transition-all text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  LINE User ID <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={newContact.lineUserId}
+                  onChange={(e) => setNewContact(prev => ({ ...prev, lineUserId: e.target.value }))}
+                  placeholder="e.g., U1234567890abcdef..."
+                  className="w-full p-3 border border-gray-200 rounded-lg focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none transition-all text-sm font-mono"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Get User ID from webhook when user messages your bot
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Tier</label>
+                <select
+                  value={newContact.tier}
+                  onChange={(e) => setNewContact(prev => ({ ...prev, tier: e.target.value as 'Gold' | 'Silver' | 'Bronze' }))}
+                  className="w-full p-3 border border-gray-200 rounded-lg focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none transition-all text-sm bg-white"
+                >
+                  <option value="Gold">Gold</option>
+                  <option value="Silver">Silver</option>
+                  <option value="Bronze">Bronze</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Interests</label>
+                <input
+                  type="text"
+                  value={newContact.interests}
+                  onChange={(e) => setNewContact(prev => ({ ...prev, interests: e.target.value }))}
+                  placeholder="e.g., Technology, Fashion, Travel"
+                  className="w-full p-3 border border-gray-200 rounded-lg focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none transition-all text-sm"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Separate multiple interests with commas
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-gray-50 px-6 py-4 flex justify-end gap-3 rounded-b-xl border-t border-gray-100">
+              <button
+                onClick={() => setIsAddContactModalOpen(false)}
+                className="text-sm font-medium text-gray-600 hover:text-gray-900 px-4 py-2 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAddContact}
+                disabled={!newContact.name.trim() || !newContact.lineUserId.trim()}
+                className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-medium transition-colors shadow-sm text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                <UserPlus className="w-4 h-4" />
+                Add Contact
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* Sidebar Navigation */}
       <aside className="w-20 md:w-64 bg-[#1D212F] text-white flex flex-col flex-shrink-0 transition-all duration-300">
